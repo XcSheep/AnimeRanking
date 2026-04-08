@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>動畫排名器 - 圖片進化版</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; color: #333; }
+        .setup-area { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1); }
+        textarea { width: 90%; height: 200px; margin: 10px 0; padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 16px; line-height: 1.5; }
+        
+        /* 對戰按鈕調整 */
+        #battle-options { display: flex; justify-content: center; align-items: stretch; gap: 20px; margin-top: 20px; min-height: 300px; }
+        .battle-btn { 
+            flex: 1; 
+            background-color: white; 
+            color: #333; 
+            border: 2px solid #4A90E2; 
+            padding: 15px; 
+            border-radius: 15px; 
+            cursor: pointer; 
+            transition: 0.2s; 
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .battle-btn:hover { background-color: #eef6ff; transform: scale(1.02); border-color: #357ABD; }
+        
+        /* 圖片樣式 */
+        .anime-poster { 
+            width: 100%; 
+            max-width: 200px; 
+            height: 280px; 
+            object-fit: cover; 
+            border-radius: 8px; 
+            margin-bottom: 10px;
+            background-color: #eee; /* 沒圖時的底色 */
+        }
+        .anime-name { font-size: 18px; font-weight: bold; word-break: break-all; }
+
+        .control-btns { display: flex; justify-content: center; gap: 10px; margin-top: 20px; }
+        .ctrl-btn { padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; color: white; font-weight: bold; }
+        #progress-container { width: 80%; background-color: #ddd; border-radius: 13px; margin: 20px auto; overflow: hidden; }
+        #progress-bar { width: 0%; height: 20px; background-color: #4A90E2; text-align: center; line-height: 20px; color: white; font-size: 12px; transition: width 0.3s; }
+        button.start-btn { background-color: #4A90E2; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-size: 18px; margin-top: 15px; }
+        
+        /* 結果清單樣式 */
+        .result-item { 
+            display: flex; 
+            align-items: center; 
+            padding: 10px; 
+            border-bottom: 1px solid #eee; 
+            font-size: 18px; 
+        }
+        .result-img { width: 50px; height: 70px; object-fit: cover; border-radius: 4px; margin: 0 15px; }
+    </style>
+</head>
+
+<body>
+
+    <div id="setup-screen" class="setup-area">
+        <h1>動畫排名器</h1>
+        <p>貼上動畫清單（一行一部）：</p>
+        <textarea id="animeInput" oninput="handleInputUpdate()" placeholder="例如：&#10;葬送的芙莉蓮&#10;進擊的巨人"></textarea>
+        <p id="countDisplay" style="color: #666; font-size: 14px;">目前偵測到：0 部動畫</p>
+        <label>排出前 <input type="number" id="rankLimit" value="0" min="1" style="width: 70px;" onchange="validateRankLimit()"> 名</label><br>
+        <button class="start-btn" onclick="startRanking()">開始排名對戰！</button>
+    </div>
+
+    <div id="battle-screen" class="setup-area" style="display:none;">
+        <h2 id="battle-title">請選擇較喜歡的：</h2>
+        <div id="progress-container">
+            <div id="progress-bar">0%</div>
+        </div>
+        <div id="battle-options"></div>
+        <div class="control-btns">
+            <button class="ctrl-btn" style="background-color: #999;" onclick="handleChoice('skip')">先跳過這部</button>
+            <button class="ctrl-btn" style="background-color: #e67e22;" onclick="undoLastStep()">← 返回上一步</button>
+        </div>
+    </div>
+
+    <div id="result-screen" class="setup-area" style="display:none;">
+        <h1>🏆 最終排名結果 🏆</h1>
+        <div id="ranking-list" style="margin: 20px 0; max-height: 600px; overflow-y: auto; background: #fafafa; padding: 10px; border-radius: 8px;"></div>
+        <button class="start-btn" onclick="location.reload()">重新開始</button>
+    </div>
+
+    <script>
+        let allAnimes = [], sortedAnimes = [];
+        let currentIndex = 1;
+        let resolveChoice = null;
+        let saveKey = "";
+        let history = [];
+        let animeStates = {};
+        let currentLow = 0, currentHigh = 0;
+        let isUndoing = false;
+
+        // --- 自動偵測路徑邏輯 ---
+        // 如果是在電腦本地打開 (file://)，用舊路徑；如果在網路上 (GitHub)，用新路徑
+        const IMG_PATH = (window.location.protocol === "file:") 
+                         ? "../AnimeSearch/anime_images/" 
+                         : "anime_images/";
+
+        function handleInputUpdate() {
+            const list = getListFromInput();
+            const count = list.length;
+            document.getElementById('countDisplay').innerText = `目前偵測到：${count} 部動畫`;
+            const limitInput = document.getElementById('rankLimit');
+            limitInput.max = count;
+            limitInput.value = count;
+        }
+
+        function validateRankLimit() {
+            const list = getListFromInput();
+            const limitInput = document.getElementById('rankLimit');
+            let val = parseInt(limitInput.value);
+            if (val > list.length) limitInput.value = list.length;
+            if (val < 1 && list.length > 0) limitInput.value = 1;
+        }
+
+        function getListFromInput() {
+            return document.getElementById('animeInput').value.split('\n').map(s => s.trim()).filter(s => s !== "");
+        }
+
+        async function startRanking() {
+            validateRankLimit();
+            const inputList = getListFromInput();
+            if (inputList.length < 2) return alert("請至少輸入兩部動畫！");
+
+            allAnimes = inputList;
+
+            // 打亂順序 (Fisher-Yates Shuffle)
+            for (let i = allAnimes.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [allAnimes[i], allAnimes[j]] = [allAnimes[j], allAnimes[i]];
+            }
+
+            saveKey = "anime_rank_img_v1_" + allAnimes.length; 
+            const saved = localStorage.getItem(saveKey);
+
+            if (saved && confirm("發現上次的進度，要繼續嗎？")) {
+                const data = JSON.parse(saved);
+                sortedAnimes = data.sortedAnimes;
+                allAnimes = data.allAnimes;
+                currentIndex = data.currentIndex;
+                animeStates = data.animeStates || {};
+            } else {
+                sortedAnimes = [allAnimes[0]];
+                currentIndex = 1;
+                allAnimes.forEach(name => { 
+                    animeStates[name] = { leftItem: null, rightItem: null, lastMid: -1 }; 
+                });
+            }
+
+            document.getElementById('setup-screen').style.display = 'none';
+            document.getElementById('battle-screen').style.display = 'block';
+            runRanking();
+        }
+
+        async function runRanking() {
+            while (currentIndex < allAnimes.length) {
+                let item = allAnimes[currentIndex];
+                let state = animeStates[item];
+
+                if (!isUndoing) {
+                    currentLow = 0;
+                    if (state.leftItem && sortedAnimes.includes(state.leftItem)) {
+                        currentLow = sortedAnimes.indexOf(state.leftItem) + 1;
+                    }
+                    currentHigh = sortedAnimes.length - 1;
+                    if (state.rightItem && sortedAnimes.includes(state.rightItem)) {
+                        currentHigh = sortedAnimes.indexOf(state.rightItem) - 1;
+                    }
+                }
+                isUndoing = false;
+
+                let isInterrupted = false;
+                while (currentLow <= currentHigh) {
+                    updateProgressBar();
+                    let mid;
+                    let range = currentHigh - currentLow;
+
+                    if (range === 0) {
+                        mid = currentLow;
+                    } else if (range === 1) {
+                        mid = (state.lastMid === currentLow) ? currentHigh : currentLow;
+                    } else {
+                        let randomOffset = Math.floor(Math.random() * (range + 1));
+                        mid = currentLow + randomOffset;
+                        if (mid === state.lastMid) {
+                            mid = (mid + 1 <= currentHigh) ? mid + 1 : mid - 1;
+                        }
+                    }
+                    
+                    state.lastMid = mid; 
+                    saveToHistory(currentLow, currentHigh, currentIndex);
+
+                    const isLastOption = allAnimes.length === 1 || (currentIndex === allAnimes.length - 1 && currentLow === currentHigh);
+                    let winner = await askUser(item, sortedAnimes[mid], isLastOption);
+
+                    if (winner === "undo_internal") {
+                        isInterrupted = true;
+                        break;
+                    }
+
+                    if (winner === "skip") {
+                        if(isLastOption) {
+                            alert("目前已無其他對決組合，請做出選擇！");
+                            continue;
+                        }
+                        state.leftItem = (currentLow > 0) ? sortedAnimes[currentLow - 1] : null;
+                        state.rightItem = (currentHigh < sortedAnimes.length - 1) ? sortedAnimes[currentHigh + 1] : null;
+                        allAnimes.splice(currentIndex, 1);
+                        allAnimes.push(item);
+                        isInterrupted = true;
+                        break;
+                    }
+
+                    if (winner === item) currentHigh = mid - 1;
+                    else currentLow = mid + 1;
+                }
+
+                if (isInterrupted) continue;
+
+                if (currentLow > currentHigh) {
+                    sortedAnimes.splice(currentLow, 0, item);
+                    currentIndex++;
+                    delete animeStates[item];
+                    saveProgress();
+                }
+            }
+            showFinalRanking();
+        }
+
+        function getSafeFileName(name) {
+            return name.replace(/[\\/:*?"<>|]/g, '');
+        }
+
+        function askUser(a, b, isWarning) {
+            const container = document.getElementById('battle-options');
+            const warningHtml = isWarning ? `<p id="last-warning" style="color: #e74c3c; font-weight: bold; margin-bottom: 10px;">⚠️ 避無可避！這是最後的對決組合，請做出決定。</p>` : '';
+            
+            const imgA = `${IMG_PATH}${getSafeFileName(a)}.jpg`;
+            const imgB = `${IMG_PATH}${getSafeFileName(b)}.jpg`;
+
+            container.innerHTML = `
+                <div style="width: 100%;">
+                    ${warningHtml}
+                    <div style="display: flex; justify-content: center; align-items: stretch; gap: 20px;">
+                        <button class="battle-btn" onclick="handleChoice('${a}')">
+                            <img src="${imgA}" class="anime-poster" onerror="this.src='https://via.placeholder.com/200x280?text=No+Image'">
+                            <div class="anime-name">${a}</div>
+                        </button>
+                        <div style="display: flex; align-items: center; font-weight:bold; font-size: 24px;">VS</div>
+                        <button class="battle-btn" onclick="handleChoice('${b}')">
+                            <img src="${imgB}" class="anime-poster" onerror="this.src='https://via.placeholder.com/200x280?text=No+Image'">
+                            <div class="anime-name">${b}</div>
+                        </button>
+                    </div>
+                </div>`;
+            return new Promise(res => { resolveChoice = res; });
+        }
+
+        function handleChoice(val) {
+            if (resolveChoice) {
+                const tempRes = resolveChoice;
+                resolveChoice = null;
+                tempRes(val);
+            }
+        }
+
+        function saveProgress() {
+            localStorage.setItem(saveKey, JSON.stringify({ sortedAnimes, currentIndex, allAnimes, animeStates }));
+        }
+
+        function saveToHistory(l, h, idx) {
+            const snapshot = {
+                sortedAnimes: [...sortedAnimes],
+                currentIndex: idx,
+                allAnimes: [...allAnimes],
+                animeStates: JSON.parse(JSON.stringify(animeStates)),
+                low: l,
+                high: h
+            };
+            history.push(JSON.stringify(snapshot));
+            if (history.length > 100) history.shift();
+        }
+
+        function undoLastStep() {
+            if (history.length < 2) return alert("無法再回退了！");
+            history.pop(); 
+            const last = JSON.parse(history.pop());
+            sortedAnimes = last.sortedAnimes;
+            currentIndex = last.currentIndex;
+            allAnimes = last.allAnimes;
+            animeStates = last.animeStates;
+            currentLow = last.low;
+            currentHigh = last.high;
+            isUndoing = true;
+            updateProgressBar();
+            handleChoice("undo_internal");
+        }
+
+        function updateProgressBar() {
+            const percent = Math.floor((currentIndex / allAnimes.length) * 100);
+            const bar = document.getElementById('progress-bar');
+            bar.style.width = percent + "%";
+            bar.innerText = percent + "%";
+        }
+
+        function showFinalRanking() {
+            document.getElementById('battle-screen').style.display = 'none';
+            document.getElementById('result-screen').style.display = 'block';
+            const limit = document.getElementById('rankLimit').value;
+            const listDiv = document.getElementById('ranking-list');
+            
+            listDiv.innerHTML = sortedAnimes.slice(0, limit).map((name, i) => {
+                const imgPath = `${IMG_PATH}${getSafeFileName(name)}.jpg`;
+                return `
+                    <div class="result-item">
+                        <span style="width: 30px;">${i + 1}.</span>
+                        <img src="${imgPath}" class="result-img" onerror="this.style.display='none'">
+                        <strong>${name}</strong>
+                    </div>`;
+            }).join('');
+            localStorage.removeItem(saveKey);
+        }
+    </script>
+</body>
+</html>
